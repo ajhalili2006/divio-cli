@@ -103,7 +103,7 @@ Release Tag:
         # the new version.
         - python setup.py sdist bdist_wheel
         - twine check dist/*
-        - twine upload --repository testpypi -u $PYPI_USERNAME -p $PYPI_PASSWORD dist/*
+        - twine upload -u $PYPI_USERNAME -p $PYPI_PASSWORD dist/*
 
     only:
       - /^(\d+\.)?(\d+\.)?(\d+)$/
