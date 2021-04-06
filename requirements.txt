@@ -5,20 +5,40 @@
 #    pip-compile --no-index --output-file requirements.txt requirements.in
 #
 attrs==20.3.0
-certifi==2020.12.5        # via requests
-chardet==3.0.4            # via requests
+    # via -r requirements.in
+certifi==2020.12.5
+    # via requests
+chardet==3.0.4
+    # via requests
 click-aliases==1.0.1
+    # via -r requirements.in
 click==7.1.2
-colorama==0.4.4 ; sys_platform == "win32"
-idna==2.7                 # via requests
+    # via
+    #   -r requirements.in
+    #   click-aliases
+idna==2.7
+    # via requests
 packaging==20.8
+    # via -r requirements.in
 pyaml==20.4.0
-pyparsing==2.4.7          # via packaging
+    # via -r requirements.in
+pyparsing==2.4.7
+    # via packaging
 python-dateutil==2.8.1
-pytz==2020.5              # via tzlocal
-pyyaml==5.3.1             # via pyaml
+    # via -r requirements.in
+pytz==2020.5
+    # via tzlocal
+pyyaml==5.4
+    # via pyaml
 requests==2.20.1
+    # via -r requirements.in
 six==1.15.0
+    # via
+    #   -r requirements.in
+    #   python-dateutil
 tabulate==0.8.7
+    # via -r requirements.in
 tzlocal==2.1
-urllib3==1.24.3           # via requests
+    # via -r requirements.in
+urllib3==1.24.3
+    # via requests
