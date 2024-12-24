@@ -1,11 +1,11 @@
-# -*- coding: utf-8 -*-
 import errno
 import os
 import subprocess
-import sys
 from collections import OrderedDict
 
 import click
+
+from divio_cli.exceptions import DivioException
 
 from . import cloud, utils
 from .settings import DOCKER_TEST_IMAGE
@@ -15,7 +15,7 @@ ERROR = 1
 WARNING = 0
 
 
-class Check(object):
+class Check:
     name = None
     command = None
     error_level = ERROR
@@ -26,16 +26,14 @@ class Check(object):
             utils.check_call(self.command, catch=False, silent=True)
         except OSError as exc:
             if exc.errno == errno.ENOENT:
-                errors.append(
-                    "executable {} not found".format(self.command[0])
-                )
+                errors.append(f"Executable {self.command[0]} not found")
             else:
-                msg = "Command '{}' returned non-zero exit status {}".format(
-                    self.fmt_command(), exc.errno
-                )
+                msg = f"Command '{self.fmt_command()}' returned non-zero exit status {exc.errno}"
                 if hasattr(exc, "strerror"):
-                    msg += ": {}".format(exc.strerror)
+                    msg += f": {exc.strerror}"
 
+                if msg.endswith("."):
+                    msg += "."
                 errors.append(msg)
         except subprocess.CalledProcessError as exc:
             errors += self.fmt_exception(exc)
@@ -50,9 +48,7 @@ class Check(object):
         if command_output:
             message = command_output
         else:
-            message = "Command '{}' returned non-zero exit status {}".format(
-                self.fmt_command(), exc.returncode
-            )
+            message = f"Command '{self.fmt_command()}' returned non-zero exit status {exc.returncode}"
 
         return [message]
 
@@ -65,6 +61,7 @@ class LoginCheck(Check):
         success, msg = client.check_login_status()
         if not success:
             return [msg]
+        return None
 
 
 class GitCheck(Check):
@@ -79,7 +76,37 @@ class DockerClientCheck(Check):
 
 class DockerComposeCheck(Check):
     name = "Docker Compose"
-    command = ("docker-compose", "--version")
+    command = ("docker", "compose", "version")
+
+    def run_check(self):
+        """
+        Modified run_check method to check for both old and new docker
+        compose versions.
+        """
+        errors = []
+        try:
+            try:
+                utils.check_call(self.command, catch=False, silent=True)
+            except (OSError, subprocess.CalledProcessError):
+                # Check for the old version
+                utils.check_call(
+                    ("docker-compose", "--version"), catch=False, silent=True
+                )
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                errors.append(
+                    "Neither `docker compose` nor `docker-compose` found."
+                )
+            msg = f"Command '{self.fmt_command()}' returned non-zero exit status {exc.errno}"
+            if hasattr(exc, "strerror"):
+                msg += f": {exc.strerror}"
+
+            if msg.endswith("."):
+                msg += "."
+            errors.append(msg)
+        except subprocess.CalledProcessError as exc:
+            errors += self.fmt_exception(exc)
+        return errors
 
 
 def get_engine_down_error():
@@ -90,7 +117,7 @@ def get_engine_down_error():
 
 class DockerEngineBaseCheck(Check):
     def fmt_exception(self, exc):
-        errors = super(DockerEngineBaseCheck, self).fmt_exception(exc)
+        errors = super().fmt_exception(exc)
         if exc.returncode == 125:
             errors.append(get_engine_down_error())
         return errors
@@ -101,37 +128,32 @@ class DockerEngineCheck(DockerEngineBaseCheck):
     command = ("docker", "run", "--rm", DOCKER_TEST_IMAGE, "true")
 
     def fmt_exception(self, exc):
-        errors = super(DockerEngineCheck, self).fmt_exception(exc)
+        errors = super().fmt_exception(exc)
         if not utils.is_windows():
             default_host_path = "/var/run/docker.sock"
-            default_host_url = "unix://{}".format(default_host_path)
+            default_host_url = f"unix://{default_host_path}"
             current_host_url = os.environ.get("DOCKER_HOST")
             current_host_is_default = current_host_url == default_host_url
 
             # run additional checks if it user is running default config
             if not current_host_url or current_host_is_default:
-
                 # check if docker socket exists
                 if not os.path.exists(default_host_path):
                     errors.append(
-                        "Could not find docker engine socket at {}. Please "
+                        f"Could not find docker engine socket at {default_host_path}. Please "
                         "make sure your docker engine is setup correctly and "
                         "check the docker installation guide: "
-                        "https://docs.docker.com/engine/installation/".format(
-                            default_host_path
-                        )
+                        "https://docs.docker.com/engine/installation/"
                     )
 
                 elif not os.access(default_host_path, os.R_OK):
                     # check if docker socket is readable
                     errors.append(
-                        "No read permissions on {}. Please make sure the unix "
+                        f"No read permissions on {default_host_path}. Please make sure the unix "
                         "socket can be accessed without root permissions. "
                         "More information can be found in the docker "
                         "installation guide: https://docs.docker.com/engine/"
-                        "installation/linux/ubuntulinux/#create-a-docker-group".format(
-                            default_host_path
-                        )
+                        "installation/linux/ubuntulinux/#create-a-docker-group"
                     )
 
         return errors
@@ -153,7 +175,7 @@ class DockerEnginePingCheck(DockerEngineBaseCheck):
     )
 
     def fmt_exception(self, exc):
-        errors = super(DockerEnginePingCheck, self).fmt_exception(exc)
+        errors = super().fmt_exception(exc)
         errors.append(
             "The 'ping' command inside docker is not able to ping "
             "8.8.8.8. This might be due to missing internet connectivity, "
@@ -175,7 +197,7 @@ class DockerEngineDNSCheck(DockerEngineBaseCheck):
     )
 
     def fmt_exception(self, exc):
-        errors = super(DockerEngineDNSCheck, self).fmt_exception(exc)
+        errors = super().fmt_exception(exc)
         errors.append(
             "The DNS resolution inside docker is not able to resolve "
             "control.divio.com. This might be due to missing internet "
@@ -208,8 +230,7 @@ def check_requirements(config=None, checks=None):
             continue
         check = ALL_CHECKS.get(check_key)
         if not check:
-            click.secho("Invalid check {}".format(check_key), fg="red")
-            sys.exit(1)
+            raise DivioException(f"Invalid check {check_key}")
         errors = check().run_check()
         yield check_key, check.name, errors
 
@@ -243,11 +264,11 @@ def check_requirements_human(config, checks=None, silent=False):
         return True
 
     if not silent:
-        click.secho("\nThe following errors occurred:", fg="red")
-        for check, check_name, msgs in errors:
-            click.secho("\n {}:".format(check_name))
+        click.secho("\nThe following errors occurred:", fg="red", err=True)
+        for _check, check_name, msgs in errors:
+            click.secho(f"\n {check_name}:")
             for msg in msgs:
-                click.secho(" > {}".format(msg))
+                click.secho(f" > {msg}")
 
     max_error_level = max([ALL_CHECKS[e[0]].error_level for e in errors])
     return True if max_error_level == 0 else False

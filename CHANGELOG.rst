@@ -1,6 +1,169 @@
 Changelog
 =========
 
+4.0.3 (2024-11-12)
+----------
+* Updated a couple of help texts to avoid confusion.
+* Added a note to backup restores initiated from the CLI.
+* Added --binary option when pushing a PostgreSQL database dump.
+
+4.0.2 (2024-06-27)
+-------------------
+
+* Added basic support for Python 3.12
+* Fixed GNU readline issues on Windows
+
+4.0.1 (2024-05-15)
+-------------------
+
+* Fixed SSH verification for external repositories during app creation.
+* Fixed `divio app push db` validation for local postgres binary files.
+
+4.0.0 (2024-02-13)
+-------------------
+
+* Added tests for environment variables and deployments commands.
+* Added application creation functionality based on the new application creation approach.
+* Added support to list and add services to an application.
+* Added support to list regions.
+* Added support to list organisations.
+* Added support for environment prefix to app pull.
+* Improved exception handling.
+* Removed support for Python 3.6 (end of life since December 2021).
+* Added support for Python 3.10 and Python 3.11.
+* Added the option to keep temporary files for app push and pull.
+* Added logout command.
+* Ported addon commands over to v3 APIs.
+* Removed boilerplate support.
+* Removed template release commands confirm prompt in non-interactive mode.
+* Migrated from `setup.py`` to `pyproject.toml` for packaging.
+* Added support for username/password authentication on external repositories during app creation.
+* Removed usage of `imp` module to better support Python 3.12.
+* Added support for template services during app creation.
+* Fixed `divio app push` for projects hosted on Exoscale.
+* Switch to docker compose v2 command invocation.
+
+3.17.2 (2023-03-16)
+-------------------
+
+* Updated commands for deployments and environment variables to have no limit by default.
+* Changed --all option to --all-envs for deployments and environment variables to avoid confusion.
+* Display warnings related to the --limit option at the bottom of the rendered content for deployments and environment variables.
+* Remove informational section about now deprecated application from the setup command.
+* Added a new flag (--txt) for environment variables to display content in a text-like form, only with names and values included.
+
+3.17.1 (2023-03-09)
+-------------------
+
+* Require at least version 0.8.10 of tabulate to be installed
+
+3.17.0 (2023-03-09)
+-------------------
+
+* Added new implementation of environment variables
+* Added support for deployments listing for applications
+
+3.16.1 (2023-02-01)
+-------------------
+
+* Add support for ID and UUID as a remote-id parameter. 
+
+3.16.0 (2023-01-25)
+-------------------
+
+* Support ``-h`` as a shorthand for the ``--help`` option.
+* Fixed bug when setting up project with empty database.
+* Support ``-P`` to deactivate pagers when viewing potentially larger amount of data.
+* Changed output of some error or warning messages from stdout to stderr.
+* Renamed the STAGE param into ENVIRONMENT in CLI commands
+* Removed unused code.
+* Moved deploy-log command to consume v3 APIs.
+
+3.15.7 (2022-09-23)
+-------------------
+
+* Display correct error message for invalid environment with env-vars and make stage parameter case-insensitive.
+
+3.15.6 (2022-04-28)
+-------------------
+
+* Detect pasting shortcut malfunction for access token in login (Windows users).
+
+3.15.5 (2022-04-20)
+-------------------
+
+* Prettify API error responses
+
+3.15.4 (2022-04-13)
+-------------------
+
+* Changed usage of deprecated click function `get_terminal_size` to be compatible with click 8.1.
+
+3.15.3 (2022-04-01)
+-------------------
+
+* Pin `click` dependency to >= 7.0
+* Changed CLI standard usage to up/down as primary commands for consistency.
+
+3.15.2 (2022-01-19)
+-------------------
+
+* Fixed issue where DB pull was not working on native Windows.
+
+3.15.1 (2021-12-17)
+-------------------
+
+* Fixed issue with zombie processes in WSL after launching a web page.
+
+3.15.0 (2021-10-25)
+-------------------
+
+* Simplified dependencies and removed strict pinning. We now allow more flexibility of dependencies when the CLI gets installed into an existing environment. 
+* Added optional error reporting.
+* Fixed issue when trying to detect a docker-compose database
+
+3.14.1 (2021-10-06)
+-------------------
+
+* Fixed issue when trying to import a database during project setup.
+
+3.14.0 (2021-10-06)
+-------------------
+
+* Catch error when DB restore requested when DB service not available.
+* Fixed issue when retrieving docker compose configuration in versions of docker compose >= 2.
+* Added sanity check to warn users if new and old configuration files are used at the same time.
+* Updated requirements
+
+3.13.1 (2021-08-06)
+-------------------
+
+* Renamed "project" command group to "app" - with alias for backwards compatiblity.
+* Improve pipelines
+* Fixed bug when pulling a database on projects with an old configuration file. 
+
+3.13.0 (2021-07-29)
+-------------------
+
+* Improved handling of database files during pull
+* Added support for docker-compose v2
+
+3.12.0 (2021-05-05)
+-------------------
+
+* Updated dependencies which removes support for python 3.5 and python 2
+* Added support for Divio zones
+* Add support for branches of environments on project setup
+* Added better DB error handling.
+* Resolved YAML deprecation warning
+
+3.11.0 (2021-03-17)
+-------------------
+
+* Corrected spelling error in help text
+* Fix issue database issue during project setup
+
+
 3.10.0 (2021-01-15)
 -------------------
 
@@ -27,7 +190,7 @@ Changelog
 ------------------
 
 * renamed `.aldryn` file in a project to `.divio/conifg.json`
-* renamed global configuration file as well. 
+* renamed global configuration file as well.
 * made `docker-compose.yml` files optional
 * added command to recreated `.divio/config.json`
 * renamed interal environment variable from `ALDRYN_HOST` to `DIVIO_HOST`

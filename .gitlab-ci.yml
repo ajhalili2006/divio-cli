@@ -1,38 +1,26 @@
-services:
-  - docker:dind
+include:
+  - project: divio/infra/gitlab-pipelines
+    file: python-package/.gitlab-ci.yml
 
+variables:
+  LINT_FOLDER_PYTHON: divio_cli
+  CRYPTOGRAPHY_DONT_BUILD_RUST: 1
 
-stages:
-    - QA
-    - Statistics
-    - Release
+check-newsfragment:
+  rules: [when: never]
 
+check-changelog:
+  rules: [when: never]
 
-Check linting:
-  image: divio/lint
-  stage: QA
-  variables: 
-    LINT_FOLDER_PYTHON: divio_cli 
-  script:
-    - /bin/lint --check
+unit-tests:
+  # Do not run integration tests (done in another job)
+  script: tox -x tox.skip_missing_interpreters=false -- -m "not integration"
 
-
-Unit Tests:
-    stage: QA
-    image: themattrix/tox
-    script: tox
-    artifacts:
-      paths:
-        - ${CI_PROJECT_DIR}/artifacts/.coverage.*
-      reports:
-        junit: junit-testreport-*.xml
-
-
-Integration Tests:
-  stage: QA
-  image: docker:stable
+integration-tests:
+  stage: qa
+  image: docker:latest
   before_script:
-    - apk --update add openssh-client git python3 python3-dev build-base libffi-dev openssl-dev
+    - apk --update add openssh-client git python3 python3-dev py-pip build-base libffi-dev openssl-dev
     - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
     - eval $(ssh-agent -s)
     ## Add the SSH key stored in SSH_PRIVATE_KEY variable to the agent store
@@ -45,67 +33,32 @@ Integration Tests:
     - chmod 700 ~/.ssh
     ## Allow host keys
     - ssh-keyscan git.divio.com >> ~/.ssh/known_hosts
+    - ssh-keyscan git.dev.aldryn.net >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
 
     # prepare netrc as login
     - echo "$CI_TEST_NETRC" > ~/.netrc
   script: 
-      - python3 -m ensurepip --default-pip
-      - pip install -r requirements.txt
-      - pip install docker-compose pytest pytest-cov
-      - python3 setup.py develop
+      - pip install -e .[test]
       - divio doctor
-      - pytest -m integration --cov=divio_cli --cov-report= --cov-branch --junitxml=junit-testreport-integration.xml
+      - mkdir -p ${CI_PROJECT_DIR}/test_data
+      - export COVERAGE_FILE=.coverage # do not override existing files in .artifacts
+      - pytest -v -s -m integration --cov=divio_cli --cov-report= --cov-branch --junitxml=.artifacts/junit-testreport-integration.xml
   after_script:
-      - mkdir -p ${CI_PROJECT_DIR}/artifacts
-      - cp ${CI_PROJECT_DIR}/.coverage ${CI_PROJECT_DIR}/artifacts/.coverage.integrationtest
+      - mkdir -p ${CI_PROJECT_DIR}/.artifacts
+      - cp ${CI_PROJECT_DIR}/.coverage ${CI_PROJECT_DIR}/.artifacts/.coverage.integrationtest
   artifacts:
     paths:
-      - ${CI_PROJECT_DIR}/artifacts/.coverage.integrationtest
+      - .artifacts/.coverage.integrationtest
     reports:
-      junit: junit-testreport-integration.xml
+      junit: .artifacts/junit-testreport-integration.xml
 
 
-Check Manifest:
-  stage: QA
-  image: python:3-alpine
+release:
+  stage: release
+  extends: .prepare-release
   script:
-      - apk add git
-      - pip install check-manifest
-      - check-manifest
-
-
-Combine Coverage:
-  stage: Statistics
-  image: python:3-alpine
-  script:
-      - pip install pytest-cov
-      - cd artifacts 
-      - ls -la
-      - coverage combine
-      - coverage html -i
-      - coverage report -i
-      - coverage xml -i
-  artifacts:
-    paths:
-      - ${CI_PROJECT_DIR}/artifacts/
-    reports:
-      cobertura: ${CI_PROJECT_DIR}/artifacts/coverage.xml
-
-
-Release Tag:
-    stage: Release
-    image: python:3-alpine
-    script:
-        - apk add python3-dev build-base libffi-dev openssl-dev git
-        - pip install twine setuptools_scm
-        # Install the package in develop mode so setuptools_scm can retrieve 
-        # the new version.
-        - python setup.py sdist bdist_wheel
-        - twine check dist/*
-        - twine upload -u $PYPI_USERNAME -p $PYPI_PASSWORD dist/*
-
-    only:
-      - /^(\d+\.)?(\d+\.)?(\d+)$/
-    except:
-      - branches
+    - !reference [.prepare-release, script]
+    - !reference [.release, pypi] # requires PYPI_USERNAME and PYPI_PASSWORD
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^(\d+\.)?(\d+\.)?(\d+)$/

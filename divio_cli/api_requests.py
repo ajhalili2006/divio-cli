@@ -1,8 +1,9 @@
 import os
+from urllib.parse import urljoin, urlparse
 
-import click
 import requests
-from six.moves.urllib_parse import urljoin, urlparse
+
+from divio_cli.exceptions import DivioException
 
 from . import messages
 from .utils import create_temp_dir, get_user_agent
@@ -10,7 +11,7 @@ from .utils import create_temp_dir, get_user_agent
 
 class SingleHostSession(requests.Session):
     def __init__(self, host, **kwargs):
-        super(SingleHostSession, self).__init__()
+        super().__init__()
         self.debug = kwargs.pop("debug", False)
         self.host = host.rstrip("/")
 
@@ -38,51 +39,60 @@ class SingleHostSession(requests.Session):
         if v3_compatibilty:
             # V3 compatibility hack
             url = url.replace("control", "api", 1)
-        return super(SingleHostSession, self).request(
-            method, url, *args, **kwargs
-        )
+            # All v3 endpoints support JSON, and some use nested data structures
+            # that do not work with url-encoded body
+            kwargs["json"] = kwargs.pop("data", {})
+        return super().request(method, url, *args, **kwargs)
 
 
-class APIRequestError(click.ClickException):
-    def show(self, file=None):
-        click.secho(
-            "\nError: {}".format(self.format_message()),
-            file=file,
-            err=True,
-            fg="red",
-        )
+class APIRequestError(DivioException):
+    pass
 
 
-class APIRequest(object):
+class NetworkError(DivioException):
+    pass
+
+
+class APIRequest:
     network_exception_message = messages.NETWORK_ERROR_MESSAGE
     default_error_message = messages.SERVER_ERROR
     response_code_error_map = {
         requests.codes.forbidden: messages.AUTH_INVALID_TOKEN,
         requests.codes.unauthorized: messages.AUTH_INVALID_TOKEN,
         requests.codes.not_found: messages.RESOURCE_NOT_FOUND_ANONYMOUS,
+        requests.codes.bad_request: messages.BAD_REQUEST,
     }
 
     method = "GET"
     url = None
     default_headers = {"User-Agent": get_user_agent()}
-    headers = {}
 
     def __init__(
         self,
         session,
         url=None,
         url_kwargs=None,
+        params=None,
         data=None,
         files=None,
+        proceed_on_4xx=False,
+        headers=None,
         *args,
-        **kwargs
+        **kwargs,
     ):
         self.session = session
         if url:
             self.url = url
         self.url_kwargs = url_kwargs or {}
+        self.params = params or {}
         self.data = data or {}
         self.files = files or {}
+        self.proceed_on_4xx = proceed_on_4xx
+
+        self.headers = {
+            **self.default_headers,
+            **(headers or {}),
+        }
 
     def __call__(self, *args, **kwargs):
         return self.request(*args, **kwargs)
@@ -91,7 +101,7 @@ class APIRequest(object):
         return self.url.format(**self.url_kwargs)
 
     def get_login(self):
-        """ Tries to get the login name for the current request """
+        """Tries to get the login name for the current request"""
         # import done here to prevent circular import
         from . import cloud
 
@@ -105,48 +115,51 @@ class APIRequest(object):
     def get_error_code_map(self, login=None):
         # if a login is provided, change the errormessages accordingly
         if login:
-            self.response_code_error_map[
-                requests.codes.not_found
-            ] = messages.RESOURCE_NOT_FOUND.format(login=login)
+            self.response_code_error_map[requests.codes.not_found] = (
+                messages.RESOURCE_NOT_FOUND.format(login=login)
+            )
 
         return self.response_code_error_map
-
-    def get_headers(self):
-        headers = self.default_headers.copy()
-        headers.update(self.headers)
-        return headers
 
     def request(self, *args, **kwargs):
         try:
             response = self.session.request(
                 self.method,
                 self.get_url(),
+                *args,
                 data=self.data,
                 files=self.files,
-                headers=self.get_headers(),
-                *args,
-                **kwargs
+                headers=self.headers,
+                params=self.params,
+                **kwargs,
             )
         except (
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
         ) as e:
-            raise click.ClickException(messages.NETWORK_ERROR_MESSAGE + str(e))
+            raise NetworkError(messages.NETWORK_ERROR_MESSAGE + str(e))
 
         return self.verify(response)
 
     def verify(self, response):
-        if not response.ok:
+        if not response.ok and not self.proceed_on_4xx:
             error_msg = self.get_error_code_map(self.get_login()).get(
-                response.status_code
+                response.status_code, self.default_error_message
             )
-            if not error_msg:
-                response_content = response.text
-                if not self.session.debug:
-                    response_content = response_content[:300]
-                error_msg = "{}\n\n{}".format(
-                    self.default_error_message, response_content
-                )
+            response_content = response.text
+            if not self.session.debug:
+                response_content = response_content[:300]
+            if response_content:
+                # Try to extract all errors separately and build a prettified error message.
+                # non_field_errors is the default key our APIs are using for returning such errors.
+                try:
+                    non_field_errors = "\n".join(
+                        list(response.json()["non_field_errors"])
+                    )
+                    error_msg = f"{error_msg}\n\n{non_field_errors}"
+                # Must keep this generic due to compatibility issues of requests library for json decode exceptions.
+                except Exception:
+                    error_msg = f"{error_msg}\n\n{response_content}"
             raise APIRequestError(error_msg)
         return self.process(response)
 
@@ -154,22 +167,27 @@ class APIRequest(object):
         return response.json()
 
 
-class RawResponse(object):
+class APIV3Request(APIRequest):
+    def request(self, *args, **kwargs):
+        return super().request(*args, v3_compatibilty=True, **kwargs)
+
+
+class RawResponse:
     def process(self, response):
         return response
 
 
-class TextResponse(object):
+class TextResponse:
     def process(self, response):
         return response.text
 
 
-class JsonResponse(object):
+class JsonResponse:
     def process(self, response):
         return response.json()
 
 
-class DjangoFormMixin(object):
+class DjangoFormMixin:
     success_message = "Request successful"
 
     def verify(self, response):
@@ -181,19 +199,19 @@ class DjangoFormMixin(object):
                 "-------------------------------------------\n\n"
             )
             for field, errors in response.json().items():
-                formatted += " - {}\n".format(field)
+                formatted += f" - {field}\n"
                 for error in errors:
-                    formatted += "   - {}\n".format(error)
+                    formatted += f"   - {error}\n"
                 formatted += "\n"
             return formatted.strip("\n")
-        return super(DjangoFormMixin, self).verify(response)
+        return super().verify(response)
 
 
-class FileResponse(object):
+class FileResponse:
     def __init__(self, *args, **kwargs):
         self.filename = kwargs.pop("filename", None)
         self.directory = kwargs.pop("directory", None)
-        super(FileResponse, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def process(self, response):
         dump_path = os.path.join(
@@ -209,193 +227,150 @@ class FileResponse(object):
 
     def request(self, *args, **kwargs):
         kwargs["stream"] = True
-        return super(FileResponse, self).request(*args, **kwargs)
+        return super().request(*args, **kwargs)
 
 
-class LoginRequest(APIRequest):
-    default_error_message = messages.AUTH_SERVER_ERROR
-    url = "/api/v1/login-with-token/"
+class ProjectListRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/applications/"
+
+
+class ApplicationsListRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/applications/"
+
+
+class ApplicationPlanGroupsListRequest(JsonResponse, APIV3Request):
+    url = "/billing/v3/application-plan-groups/"
+
+
+class ApplicationPlanGroupGetRequest(JsonResponse, APIV3Request):
+    url = "/billing/v3/application-plan-groups/{plan_group_uuid}/"
+
+
+class ProjectDetailRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/applications/{application_uuid}/"
+
+
+class OrganisationDetailRequest(JsonResponse, APIV3Request):
+    url = "/iam/v3/organisations/{organisation_uuid}/"
+
+
+class GetCurrentUserRequest(JsonResponse, APIV3Request):
+    url = "/iam/v3/me/"
+
+
+class DeploymentByApplicationRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/deployments/?application={application_uuid}&environment={environment_uuid}"
+
+    def process(self, response):
+        return response.json()["results"][0]
+
+
+class DeployProjectRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/deployments/"
     method = "POST"
 
 
-class LoginStatusRequest(APIRequest):
-    url = "/track/"
-    method = "GET"
-
-
-class ProjectListRequest(APIRequest):
-    url = "/api/v1/user-websites/"
-
-
-class ProjectDetailRequest(APIRequest):
-    url = "/api/v1/website/{website_id}/detail/"
-
-
-class DeployProjectProgressRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/deploy/"
-    method = "GET"
-
-
-class DeployLogRequest(JsonResponse, APIRequest):
-    url = "api/v1/website/{website_id}/deploy-log/{stage}/"
-    method = "GET"
-
-
-class DeployProjectRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/deploy/"
-    method = "POST"
-
-
-class RegisterAddonRequest(DjangoFormMixin, JsonResponse, APIRequest):
-    url = "/api/v1/addon/register/"
+class RegisterAddonRequest(DjangoFormMixin, JsonResponse, APIV3Request):
+    url = "/legacy/v3/addons/"
     method = "POST"
     success_message = "Addon successfully registered"
 
 
-class UploadAddonRequest(TextResponse, APIRequest):
-    url = "/api/v1/apps/"
+class UploadAddonRequest(TextResponse, APIV3Request):
+    url = "/legacy/v3/addons/{addon_uuid}/upload/"
     method = "POST"
 
 
-class UploadBoilerplateRequest(TextResponse, APIRequest):
-    url = "/api/v1/boilerplates/"
+class AddonPackageNameToUUIDRequest(JsonResponse, APIV3Request):
+    url = "/legacy/v3/addons/?package_name={package_name}"
+
+
+class SlugToAppUUIDRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/applications/?slug={website_slug}"
+
+
+class CreateBackupRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/backups/"
     method = "POST"
 
 
-class ProjectLockQueryRequest(APIRequest):
-    url = "/api/v1/website/{website_id}/lock/"
-    method = "GET"
-
-    def process(self, response):
-        return response.json("is_locked")
-
-
-class ProjectLockRequest(TextResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/lock/"
-    method = "PUT"
-
-
-class ProjectUnlockRequest(TextResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/lock/"
-    method = "DELETE"
-
-
-class SlugToIDRequest(APIRequest):
-    url = "/api/v1/slug-to-id/{website_slug}/"
-
-    def process(self, response):
-        return response.json().get("id")
-
-
-class IDToSlugRequest(APIRequest):
-    url = "/api/v1/id-to-slug/{website_id}/"
-
-    def process(self, response):
-        return response.json().get("slug")
-
-
-class DownloadBackupRequest(FileResponse, APIRequest):
-    url = "/api/v1/workspace/{website_slug}/download/backup/"
-    headers = {"accept": "application/x-tar-gz"}
-
-    def verify(self, response):
-        if response.status_code == requests.codes.not_found:
-            # no backups yet, ignore
-            return None
-        return super(DownloadBackupRequest, self).verify(response)
-
-
-# Download DB
-
-
-class DownloadDBRequestRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/download/db/request/"
-    method = "POST"
-
-
-class DownloadDBProgressRequest(JsonResponse, APIRequest):
+class GetBackupRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/backups/{backup_uuid}/"
     method = "GET"
 
 
-# Download Media
-
-
-class DownloadMediaRequestRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/download/media/request/"
-    method = "POST"
-
-
-class DownloadMediaProgressRequest(JsonResponse, APIRequest):
+class GetServiceInstanceBackupRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/service-instance-backups/{backup_si_uuid}/"
     method = "GET"
 
 
-# Upload DB
-
-
-class UploadDBRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/upload/db/"
+class CreateBackupDownloadRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/backup-downloads/"
     method = "POST"
 
-    def get_error_code_map(self, login=None):
-        error_codes = super(UploadDBRequest, self).get_error_code_map()
-        error_codes[requests.codes.bad_request] = messages.INVALID_DB_SUBMITTED
-        return error_codes
 
-    def verify(self, response):
-        if response.status_code == requests.codes.bad_request:
-            try:
-                db_log = response.json()["message"].encode("utf-8")
-            except (TypeError, IndexError):
-                pass
-            else:
-                logfile = os.path.join(os.getcwd(), "db_upload.log")
-                with open(logfile, "w+") as fh:
-                    fh.write(db_log)
-
-        return super(UploadDBRequest, self).verify(response)
-
-
-class UploadDBProgressRequest(JsonResponse, APIRequest):
+class ListBackupDownloadServiceInstancesRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/backup-download-service-instances/"
     method = "GET"
 
 
-# Upload Media
+class GetBackupDownloadServiceInstanceRequest(JsonResponse, APIV3Request):
+    url = (
+        "/apps/v3/backup-download-service-instances/{backup_download_si_uuid}"
+    )
 
 
-class UploadMediaFilesRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/upload/media/"
+# Create backup and restore using upload (pull)
+
+
+class CreateBackupUploadRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/backups/upload/"
     method = "POST"
 
 
-class UploadMediaFilesProgressRequest(JsonResponse, APIRequest):
+class FinishBackupUploadRequest(JsonResponse, APIV3Request):
+    # URL => found in the CreateBackupUploadRequest response body
+    method = "POST"
+
+    def __init__(self, session, *args, **kwargs):
+        # Do not use session, just a simple requests.request() call.
+        super().__init__(requests, *args, **kwargs)
+
+
+class CreateBackupRestoreRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/backup-restores/"
+    method = "POST"
+
+
+class GetBackupRestoreRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/backup-restores/{backup_restore_uuid}/"
     method = "GET"
 
 
-class GetEnvironmentVariablesRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/env/{stage}/environment-variables/"
+# Environment variables
 
 
-class GetCustomEnvironmentVariablesRequest(JsonResponse, APIRequest):
-    url = "/api/v1/website/{website_id}/env/{stage}/environment-variables/custom/"
-
-
-class SetCustomEnvironmentVariablesRequest(JsonResponse, APIRequest):
-    method = "POST"
-    url = "/api/v1/website/{website_id}/env/{stage}/environment-variables/custom/"
+class GetEnvironmentVariablesRequest(JsonResponse, APIV3Request):
+    method = "GET"
+    url = "/apps/v3/environment-variables/"
 
 
 # Repository
 
 
-class RepositoryRequest(JsonResponse, APIRequest):
-    url = "/api/v2/repositories/?website={website_id}"
+class CreateRepositoryRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/repositories/"
+    method = "POST"
 
 
-class APIV3Request(APIRequest):
-    def request(self, *args, **kwargs):
-        return super(APIV3Request, self).request(
-            v3_compatibilty=True, *args, **kwargs
-        )
+class CheckRepositoryRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/repositories/{repository_uuid}/check/"
+    method = "POST"
+
+
+class RepositoryRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/repositories/{repository_uuid}/"
+    method = "GET"
 
 
 class LogRequest(JsonResponse, APIV3Request):
@@ -403,6 +378,93 @@ class LogRequest(JsonResponse, APIV3Request):
     method = "GET"
 
 
+class EnvironmentsListRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/environments/"
+
+
 class EnvironmentRequest(JsonResponse, APIV3Request):
     url = "/apps/v3/environments/{environment_uuid}/"
+    method = "GET"
+
+
+class DeployEnvironmentRequest(JsonResponse, APIV3Request):
+    """
+    Deploys a particular environment by providing the environment's
+    uuid (environment_uuid) in the request body.
+    """
+
+    url = "/apps/v3/deployments/"
+    method = "POST"
+
+
+class DeployLogRequest(JsonResponse, APIV3Request):
+    url = "apps/v3/deployments/{deployment_uuid}/logs"
+    method = "GET"
+
+
+class DeploymentsRequest(JsonResponse, APIV3Request):
+    url = "apps/v3/deployments/"
+    method = "GET"
+
+
+class DeploymentRequest(JsonResponse, APIV3Request):
+    url = "apps/v3/deployments/{deployment_uuid}/"
+    method = "GET"
+
+
+class DeploymentEnvironmentVariablesRequest(JsonResponse, APIV3Request):
+    url = "apps/v3/deployments/{deployment_uuid}/environment-variables"
+    method = "GET"
+
+
+class ApplicationRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/applications/{application_uuid}/"
+    method = "GET"
+
+
+class CreateApplicationRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/applications/"
+    method = "POST"
+
+
+class ApplicationTemplateListRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/app-templates/"
+    method = "GET"
+
+
+class ApplicationTemplateGetRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/app-templates/{template_uuid}/"
+    method = "GET"
+
+
+class ListServiceInstancesRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/service-instances/?environment={environment_uuid}"
+    method = "GET"
+
+
+class CreateServiceInstanceRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/service-instances/"
+    method = "POST"
+
+
+class ListServicesRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/services/?{filter_region}&{filter_website}"
+    method = "GET"
+
+
+class ListRegionsRequest(JsonResponse, APIV3Request):
+    url = "/apps/v3/regions/"
+    method = "GET"
+
+
+class ListOrganisationsRequest(JsonResponse, APIV3Request):
+    url = "/iam/v3/organisations/"
+    method = "GET"
+
+
+# Legacy
+
+
+class LegacyListApplicationsRequest(JsonResponse, APIV3Request):
+    url = "/legacy/v3/applications/?id={id}"
     method = "GET"

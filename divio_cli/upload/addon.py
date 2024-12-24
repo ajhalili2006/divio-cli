@@ -1,17 +1,17 @@
 import os
 import subprocess
 import tarfile
-from io import BytesIO
+from io import BytesIO, StringIO
 
 import click
+
+from divio_cli.exceptions import DivioException
 
 from .. import settings
 from ..utils import (
     create_temp_dir,
     dev_null,
-    get_bytes_io,
     get_package_version,
-    get_string_io,
     get_subprocess_env,
     tar_add_bytesio,
     tar_add_stringio,
@@ -33,7 +33,7 @@ def package_addon(path):
         if filename.endswith(".tar.gz"):
             return os.path.join(temp_dir, filename)
 
-    raise click.ClickException("Packaged addon could not be found")
+    raise DivioException("Packaged addon could not be found")
 
 
 def add_addon_meta_files(tar, path):
@@ -41,7 +41,7 @@ def add_addon_meta_files(tar, path):
     try:
         with open(os.path.join(path, "aldryn_config.py"), "rb") as fobj:
             tar_add_bytesio(tar, BytesIO(fobj.read()), "aldryn_config.py")
-    except (OSError, IOError):
+    except OSError:
         click.secho(
             "Warning: Divio Cloud config file 'aldryn_config.py' not found. "
             "Your app will not have any configurable settings.",
@@ -49,11 +49,11 @@ def add_addon_meta_files(tar, path):
         )
 
     # version
-    tar_add_stringio(tar, get_string_io(get_package_version(path)), "VERSION")
+    tar_add_stringio(tar, StringIO(get_package_version(path)), "VERSION")
 
 
 def create_addon_archive(path):
-    data = get_bytes_io()
+    data = BytesIO()
 
     with tarfile.open(mode="w:gz", fileobj=data) as tar:
         add_meta_files(tar, path, settings.ADDON_CONFIG_FILENAME)
@@ -65,8 +65,24 @@ def create_addon_archive(path):
     return data
 
 
-def upload_addon(client, path=None):
-    path = path or "."
+def get_addon_package_name(path="."):
+    return (
+        subprocess.check_output(
+            ["python", "setup.py", "--name"],
+            cwd=path,
+            env=get_subprocess_env(),
+        )
+        .decode()
+        .strip()
+    )
+
+
+def upload_addon(client, path="."):
     validate_addon(path)
     archive_obj = create_addon_archive(path)
-    return client.upload_addon(archive_obj)
+    package_name = get_addon_package_name(path=path)
+
+    return client.upload_addon(
+        package_name=package_name,
+        archive_obj=archive_obj,
+    )
